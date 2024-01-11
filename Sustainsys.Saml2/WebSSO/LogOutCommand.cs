@@ -249,7 +249,7 @@ namespace Sustainsys.Saml2.WebSso
         {
             var request = Saml2LogoutRequest.FromXml(unbindResult.Data);
 
-            var idp = options.IdentityProviders[request.Issuer];
+            var idp = options.Notifications.GetIdentityProvider(request.Issuer, null, options);;
 
             if(options.SPOptions.SigningServiceCertificate == null)
             {
