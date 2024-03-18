@@ -1,13 +1,6 @@
 ﻿using Sustainsys.Saml2.Configuration;
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using System.Web;
-using System.Xml.Linq;
 using Sustainsys.Saml2.Metadata;
+using System;
 
 namespace Sustainsys.Saml2.WebSso
 {
@@ -36,15 +29,23 @@ namespace Sustainsys.Saml2.WebSso
             /* Dynamically fetch the identity provider for the entityid.
              * This will ensure any settings controlled with a feature flag or dynamically refreshed values will be updated after Identity Server startup.
              * We use these identity provider specific settings instead of the startup settings for the rest of the flow.
+             * The entityId needs to be organization-specific, so we can't use the entityId from the dynamically loaded options.
              */
-            SPOptions spOptions = null;
-            if (options.IdentityProviders != null && options.IdentityProviders.TryGetValue(options.SPOptions.EntityId, out var identityProvider))
+            SPOptions spOptions = options.SPOptions;
+            EntityId entityId = spOptions.EntityId;
+            if (options.IdentityProviders != null && options.IdentityProviders.TryGetValue(entityId, out var identityProvider))
             {
                 spOptions = identityProvider.spOptions;
-            }
-            else
-            {
-                spOptions = options.SPOptions;
+                try
+                {
+                    spOptions.EntityId = entityId;
+                }
+                catch (InvalidOperationException ex)
+                {
+                    // The token handler should not have been instantiated by this point, but just in case, we'll reset to the original SPOptions.
+                    spOptions = options.SPOptions;
+                    spOptions.Logger?.WriteError("Token handler already instantiated on IdentityProvider. Falling back to original SPOptions.", ex);
+                }
             }
 
 			var metadata = spOptions.CreateMetadata(urls);
@@ -58,7 +59,7 @@ namespace Sustainsys.Saml2.WebSso
                 ContentType = "application/samlmetadata+xml"
             };
 
-            var fileName = CreateFileName(spOptions.EntityId.Id);
+            var fileName = CreateFileName(entityId.Id);
 
             result.Headers.Add("Content-Disposition", "attachment; filename=\"" + fileName + "\"");
 

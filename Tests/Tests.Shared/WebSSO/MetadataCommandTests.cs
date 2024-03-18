@@ -1,15 +1,15 @@
-﻿using System;
-using System.Xml.Linq;
+﻿using FluentAssertions;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
-using FluentAssertions;
 using Sustainsys.Saml2.Configuration;
 using Sustainsys.Saml2.Metadata;
-using Sustainsys.Saml2.WebSso;
-using Sustainsys.Saml2.Tests.Helpers;
-using System.Security.Cryptography.Xml;
 using Sustainsys.Saml2.TestHelpers;
+using Sustainsys.Saml2.Tests.Helpers;
 using Sustainsys.Saml2.Tokens;
+using Sustainsys.Saml2.WebSso;
+using System;
 using System.Collections.Generic;
+using System.Security.Cryptography.Xml;
+using System.Xml.Linq;
 
 namespace Sustainsys.Saml2.Tests.WebSso
 {
@@ -193,6 +193,56 @@ namespace Sustainsys.Saml2.Tests.WebSso
             var parsedResult = XElement.Parse(actualCommandResult.Content);
             parsedResult.Attribute("cacheDuration").Value
                 .Should().Be("PT17S");
+        }
+
+        [TestMethod]
+        public void MetadataCommand_Run_EntityId()
+        {
+            // Arrange
+            var spOptions = new SPOptions() {
+                EntityId = new EntityId("http://sustainsys/Saml2"),
+            };
+            var options = new Options(spOptions);
+            var alternateSpOptions = new SPOptions() {
+                EntityId = new EntityId("http://localhost/Saml2"),
+            };
+            options.IdentityProviders.Add(new IdentityProvider(new EntityId("http://sustainsys/Saml2"), alternateSpOptions) { AllowUnsolicitedAuthnResponse = true });
+
+            // Act
+            var result = new MetadataCommand().Run(request, options);
+
+            // Assert
+            XDocument subject = XDocument.Parse(result.Content);
+
+            // Ignore the ID attribute, it is just filled with a GUID that can't be easily tested.
+            subject.Root.Attribute("ID")?.Remove();
+
+            var expectedXml = new XDocument(new XElement(Saml2Namespaces.Saml2Metadata + "EntityDescriptor",
+                new XAttribute("entityID", "http://sustainsys/Saml2"),
+                new XAttribute("cacheDuration", "PT1H"),
+                // Have to manually add the xmlns attribute here, as it will be present in the subject
+                // data and the xml tree comparison will fail if it is not present in both. Just setting the 
+                // namespace of the elements does not inject the xmlns attribute into the node tree. It is
+                // only done when outputting a string.
+                // See http://stackoverflow.com/questions/24156689/xnode-deepequals-unexpectedly-returns-false
+                new XAttribute(XNamespace.Xmlns + "saml2", Saml2Namespaces.Saml2),
+                new XAttribute("xmlns", Saml2Namespaces.Saml2MetadataName),
+                new XElement(Saml2Namespaces.Saml2Metadata + "SPSSODescriptor",
+                    new XAttribute("protocolSupportEnumeration", "urn:oasis:names:tc:SAML:2.0:protocol"),
+                    new XAttribute("AuthnRequestsSigned", false),
+                    new XAttribute("WantAssertionsSigned", false),
+                    new XElement(Saml2Namespaces.Saml2Metadata + "AssertionConsumerService",
+                        new XAttribute("Binding", Saml2Binding.HttpPostUri),
+                        new XAttribute("Location", "http://localhost/Saml2/Acs"),
+                        new XAttribute("index", 0),
+                        new XAttribute("isDefault", true)),
+                    new XElement(Saml2Namespaces.Saml2Metadata + "AssertionConsumerService",
+                        new XAttribute("Binding", Saml2Binding.HttpArtifactUri),
+                        new XAttribute("Location", "http://localhost/Saml2/Acs"),
+                        new XAttribute("index", 1),
+                        new XAttribute("isDefault", false)))));
+
+            subject.Should().BeEquivalentTo(expectedXml);
         }
     }
 }
