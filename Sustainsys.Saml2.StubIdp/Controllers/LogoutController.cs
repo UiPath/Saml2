@@ -15,7 +15,7 @@ namespace Sustainsys.Saml2.StubIdp.Controllers
     {
         public ActionResult Index()
         {
-            var requestData = Request.ToHttpRequestData(true);
+            var requestData = Request.ToHttpRequestData(true, null);
 
             var binding = Saml2Binding.Get(requestData);
 
@@ -33,7 +33,7 @@ namespace Sustainsys.Saml2.StubIdp.Controllers
                                 LogoutRequestXml = unbindResult.Data.PrettyPrint(),
                                 InResponseTo = logoutRequest.Id.Value,
                                 DestinationUrl = new Uri(new Uri(logoutRequest.Issuer.Id + "/"), "Logout"),
-                                RelayState = Request.QueryString["RelayState"]
+                                RelayState = Request.QueryString["RelayState"] ?? Request.Form["RelayState"]
                             };
                             return View("RespondToLogout", model);
                         }

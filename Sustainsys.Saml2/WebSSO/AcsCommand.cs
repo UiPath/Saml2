@@ -29,12 +29,12 @@ namespace Sustainsys.Saml2.WebSso
         /// <returns>CommandResult</returns>
         public CommandResult Run(HttpRequestData request, IOptions options)
         {
-            if(request == null)
+            if (request == null)
             {
                 throw new ArgumentNullException(nameof(request));
             }
 
-            if(options == null)
+            if (options == null)
             {
                 throw new ArgumentNullException(nameof(options));
             }
@@ -51,7 +51,7 @@ namespace Sustainsys.Saml2.WebSso
                     options.Notifications.MessageUnbound(unbindResult);
 
                     var samlResponse = new Saml2Response(unbindResult.Data, request.StoredRequestState?.MessageId, options);
-                    
+
                     var idpContext = GetIdpContext(unbindResult.Data, request, options);
 
                     var result = ProcessResponse(options, samlResponse, request.StoredRequestState, idpContext, unbindResult.RelayState);
@@ -118,7 +118,7 @@ namespace Sustainsys.Saml2.WebSso
             else
             { //When IDP-Initiated
 
-                if (identityProvider.RelayStateUsedAsReturnUrl)
+                if (identityProvider.RelayStateUsedAsReturnUrl && !string.IsNullOrWhiteSpace(relayState))
                 {
                     if (!PathHelper.IsLocalWebUrl(relayState))
                     {
@@ -146,30 +146,24 @@ namespace Sustainsys.Saml2.WebSso
             IdentityProvider identityProvider,
             string relayState)
         {
+            ValidateIssuer(storedRequestState?.Idp, samlResponse);
+
             var principal = new ClaimsPrincipal(samlResponse.GetClaims(options, storedRequestState?.RelayData));
-            
+
             if (options.SPOptions.ReturnUrl == null && !identityProvider.RelayStateUsedAsReturnUrl)
             {
                 if (storedRequestState == null)
                 {
                     throw new ConfigurationErrorsException(UnsolicitedMissingReturnUrlMessage);
                 }
-                if(storedRequestState.ReturnUrl == null)
+                if (storedRequestState.ReturnUrl == null)
                 {
                     throw new ConfigurationErrorsException(SpInitiatedMissingReturnUrl);
                 }
             }
 
-            if (identityProvider.RelayStateUsedAsReturnUrl)
-            {
-                if (relayState == null)
-                {
-                    throw new ConfigurationErrorsException(RelayStateMissing);
-                }
-            }
-
-            options.SPOptions.Logger.WriteInformation("Successfully processed SAML response " 
-                + samlResponse.Id.Value + " and authenticated " 
+            options.SPOptions.Logger.WriteInformation("Successfully processed SAML response "
+                + samlResponse.Id.Value + " and authenticated "
                 + principal.FindFirst(ClaimTypes.NameIdentifier)?.Value);
 
             return new CommandResult()
@@ -182,7 +176,14 @@ namespace Sustainsys.Saml2.WebSso
             };
         }
 
-        
+        private static void ValidateIssuer(EntityId idp, Saml2Response samlResponse)
+        {
+            if (idp != null && idp.Id != samlResponse.Issuer.Id)
+            {
+                throw new Saml2ResponseFailedValidationException(
+                    $"Unexpected issuer {samlResponse.Issuer.Id} found in response, request was sent to {idp.Id}");
+            }
+        }
 
         internal const string UnsolicitedMissingReturnUrlMessage =
 @"Unsolicited SAML response received, but no ReturnUrl is configured.

@@ -19,11 +19,12 @@ namespace Sustainsys.Saml2.AspNetCore2
     public class Saml2Handler : IAuthenticationRequestHandler, IAuthenticationSignOutHandler
     {
         private readonly IOptionsMonitorCache<Saml2Options> optionsCache;
+        private readonly IDataProtectionProvider dataProtectorProvider;
 
         // Internal to be visible to tests.
         internal Saml2Options options;
         HttpContext context;
-        private readonly IDataProtector dataProtector;
+        private IDataProtector dataProtector;
         private readonly IOptionsFactory<Saml2Options> optionsFactory;
         bool emitSameSiteNone;
 
@@ -43,10 +44,9 @@ namespace Sustainsys.Saml2.AspNetCore2
                 throw new ArgumentNullException(nameof(dataProtectorProvider));
             }
 
-            dataProtector = dataProtectorProvider.CreateProtector(GetType().FullName);
-
             this.optionsFactory = optionsFactory;
             this.optionsCache = optionsCache;
+            this.dataProtectorProvider = dataProtectorProvider;
         }
 
         /// <InheritDoc />
@@ -57,6 +57,8 @@ namespace Sustainsys.Saml2.AspNetCore2
             this.context = context ?? throw new ArgumentNullException(nameof(context));
 
             options = optionsCache.GetOrAdd(scheme.Name, () => optionsFactory.Create(scheme.Name));
+
+            dataProtector = dataProtectorProvider.CreateProtector(GetType().FullName, options.SPOptions.ModulePath);
 
             emitSameSiteNone = options.Notifications.EmitSameSiteNone(context.Request.GetUserAgent());
 
@@ -141,14 +143,17 @@ namespace Sustainsys.Saml2.AspNetCore2
         /// <returns>Task</returns>
         public async Task SignOutAsync(AuthenticationProperties properties)
         {
-            if (properties == null)
-            {
-                throw new ArgumentNullException(nameof(properties));
-            }
+            var request = context.ToHttpRequestData(options.CookieManager, dataProtector.Unprotect);
+
+            // This is not the right behaviour for Asp.Net Core - we should do nothing if
+            // there was not a configured ReturnUrl. But the LogoutCommand is designed
+            // to always redirect so this is the best we can do to accept null AuthProps without
+            // changing other stuff
+            var returnUrl = properties?.RedirectUri ?? (context.Request.PathBase + "/");
 
             await LogoutCommand.InitiateLogout(
-                context.ToHttpRequestData(options.CookieManager, dataProtector.Unprotect),
-                new Uri(properties.RedirectUri, UriKind.RelativeOrAbsolute),
+                request,
+                new Uri(returnUrl, UriKind.RelativeOrAbsolute),
                 options,
                 // In the Asp.Net Core2 model, it's the caller's responsibility to terminate the
                 // local session on an SP-initiated logout.
