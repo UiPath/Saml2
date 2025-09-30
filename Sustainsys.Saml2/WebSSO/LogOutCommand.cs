@@ -251,7 +251,7 @@ namespace Sustainsys.Saml2.WebSso
 
             var idp = options.Notifications.GetIdentityProvider(request.Issuer, null, options);
 
-            if(options.SPOptions.SigningServiceCertificate == null)
+            if(idp.spOptions.SigningServiceCertificate == null)
             {
                 throw new ConfigurationErrorsException(string.Format(CultureInfo.InvariantCulture,
                     "Received a LogoutRequest from \"{0}\" but cannot reply because single logout responses " +
@@ -272,10 +272,10 @@ namespace Sustainsys.Saml2.WebSso
             var response = new Saml2LogoutResponse(Saml2StatusCode.Success)
             {
                 DestinationUrl = idp.SingleLogoutServiceResponseUrl,
-                SigningCertificate = options.SPOptions.SigningServiceCertificate,
+                SigningCertificate = idp.spOptions.SigningServiceCertificate,
                 SigningAlgorithm = idp.OutboundSigningAlgorithm,
                 InResponseTo = request.Id,
-                Issuer = options.SPOptions.EntityId,
+                Issuer = idp.spOptions.EntityId,
                 RelayState = unbindResult.RelayState
             };
 
