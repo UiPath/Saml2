@@ -1,4 +1,5 @@
 ﻿using FluentAssertions;
+using Sustainsys.Saml2;
 using Sustainsys.Saml2.Configuration;
 using Sustainsys.Saml2.Exceptions;
 using Sustainsys.Saml2.Metadata;
@@ -19,6 +20,7 @@ using System.Text;
 using System.Threading;
 using System.Web;
 using Microsoft.IdentityModel.Tokens.Saml2;
+using NSubstitute;
 
 namespace Sustainsys.Saml2.Tests.WebSso
 {
@@ -1142,5 +1144,123 @@ namespace Sustainsys.Saml2.Tests.WebSso
 
             a.Should().Throw<ArgumentNullException>().And.ParamName.Should().Be("options");
         }
+
+        [TestMethod]
+        public void LogoutCommand_HandleRequest_UsesIdpSpecificSPOptions_ForMultiTenancy()
+        {
+            // Arrange - Create two different SP options for multi-tenancy scenario
+            var globalSpOptions = StubFactory.CreateSPOptions();
+            globalSpOptions.EntityId = new EntityId("https://global-sp.example.com");
+            globalSpOptions.ServiceCertificates.Add(SignedXmlHelper.TestCert);
+
+            var tenantSpecificSpOptions = StubFactory.CreateSPOptions();
+            tenantSpecificSpOptions.EntityId = new EntityId("https://tenant-specific-sp.example.com");
+            tenantSpecificSpOptions.ServiceCertificates.Add(SignedXmlHelper.TestCert2);
+
+            var options = new Options(globalSpOptions);
+
+            // Create an IDP with tenant-specific SP options
+            var idp = new IdentityProvider(new EntityId("https://idp.example.com"), tenantSpecificSpOptions);
+            idp.SingleLogoutServiceUrl = new Uri("https://idp.example.com/logout");
+            idp.Binding = Saml2BindingType.HttpRedirect; // Fix: Set the binding explicitly
+            idp.SigningKeys.AddConfiguredKey(SignedXmlHelper.TestCert);
+
+            options.IdentityProviders.Add(idp);
+
+            // Create a logout request from the IDP
+            var request = new Saml2LogoutRequest()
+            {
+                DestinationUrl = new Uri("http://sp.example.com/path/Saml2/logout"),
+                Issuer = new EntityId("https://idp.example.com"),
+                SigningCertificate = SignedXmlHelper.TestCert,
+                NameId = new Saml2NameIdentifier("NameId"),
+                SessionIndex = "SessionID",
+                SigningAlgorithm = SecurityAlgorithms.RsaSha256Signature
+            };
+
+            var bindResult = Saml2Binding.Get(Saml2BindingType.HttpRedirect).Bind(request);
+
+            var httpRequest = new HttpRequestData(
+                "GET",
+                bindResult.Location,
+                "/",
+                null,
+                cookieName => null,
+                null,
+                new ClaimsPrincipal(new ClaimsIdentity(new Claim[] { new Claim(Saml2ClaimTypes.SessionIndex, "SessionID") })));
+
+            Saml2LogoutResponse logoutResponse = null;
+            options.Notifications.LogoutResponseCreated = (resp, req, u, receivedIdp) =>
+            {
+                logoutResponse = resp;
+                // Verify that the response uses tenant-specific SP options
+                resp.Issuer.Id.Should().Be("https://tenant-specific-sp.example.com", 
+                    "Response should use tenant-specific EntityId, not global one");
+                resp.SigningCertificate.Thumbprint.Should().Be(SignedXmlHelper.TestCert2.Thumbprint,
+                    "Response should use tenant-specific certificate, not global one");
+            };
+
+            // Act
+            var actual = CommandFactory.GetCommand(CommandFactory.LogoutCommandName)
+                .Run(httpRequest, options);
+
+            // Assert
+            actual.Should().NotBeNull();
+            logoutResponse.Should().NotBeNull();
+            logoutResponse.Issuer.Id.Should().Be("https://tenant-specific-sp.example.com");
+            logoutResponse.SigningCertificate.Thumbprint.Should().Be(SignedXmlHelper.TestCert2.Thumbprint);
+        }
+
+        [TestMethod]
+        public void LogoutCommand_HandleRequest_ThrowsWhenTenantSpecificCertificateIsNull()
+        {
+            // Arrange - Create tenant-specific SP options without certificate
+            var globalSpOptions = StubFactory.CreateSPOptions();
+            globalSpOptions.EntityId = new EntityId("https://global-sp.example.com");
+            globalSpOptions.ServiceCertificates.Add(SignedXmlHelper.TestCert);
+
+            var tenantSpecificSpOptions = StubFactory.CreateSPOptions();
+            tenantSpecificSpOptions.EntityId = new EntityId("https://tenant-specific-sp.example.com");
+            // Intentionally not adding any certificate for this tenant
+
+            var options = new Options(globalSpOptions);
+
+            var idp = new IdentityProvider(new EntityId("https://idp.example.com"), tenantSpecificSpOptions);
+            idp.SingleLogoutServiceUrl = new Uri("https://idp.example.com/logout");
+            idp.Binding = Saml2BindingType.HttpRedirect; // Fix: Set the binding explicitly
+            idp.SigningKeys.AddConfiguredKey(SignedXmlHelper.TestCert);
+
+            options.IdentityProviders.Add(idp);
+
+            var request = new Saml2LogoutRequest()
+            {
+                DestinationUrl = new Uri("http://sp.example.com/path/Saml2/logout"),
+                Issuer = new EntityId("https://idp.example.com"),
+                SigningCertificate = SignedXmlHelper.TestCert,
+                NameId = new Saml2NameIdentifier("NameId"),
+                SessionIndex = "SessionID",
+                SigningAlgorithm = SecurityAlgorithms.RsaSha256Signature
+            };
+
+            var bindResult = Saml2Binding.Get(Saml2BindingType.HttpRedirect).Bind(request);
+
+            var httpRequest = new HttpRequestData(
+                "GET",
+                bindResult.Location,
+                "/",
+                null,
+                cookieName => null,
+                null,
+                new ClaimsPrincipal(new ClaimsIdentity(new Claim[] { new Claim(Saml2ClaimTypes.SessionIndex, "SessionID") })));
+
+            // Act & Assert
+            var command = CommandFactory.GetCommand(CommandFactory.LogoutCommandName);
+            Action act = () => command.Run(httpRequest, options);
+
+            act.Should().Throw<ConfigurationErrorsException>()
+                .WithMessage("*single logout responses must be signed and there is no signing certificate configured*");
+        }
+
+
     }
 }
