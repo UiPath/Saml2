@@ -1,0 +1,225 @@
+# Azure DevOps Pipeline for Saml2 Library
+# Builds, tests, and publishes NuGet packages to UiPath feed
+
+trigger:
+  branches:
+    include:
+      - v2
+      - feature/*
+      - bugfix/*
+  paths:
+    exclude:
+      - docs/*
+      - README.md
+      - LICENSE
+      - SECURITY.md
+
+pr:
+  branches:
+    include:
+      - v2
+  paths:
+    exclude:
+      - docs/*
+      - README.md
+      - LICENSE
+      - SECURITY.md
+
+variables:
+  buildConfiguration: 'Release'
+  dotNetFramework: 'net6.0'
+  dotNetVersion: '6.0.x'
+  majorVersion: 2
+  minorVersion: 9
+  patchVersion: $[counter(variables['minorVersion'], 0)]
+  version: $(majorVersion).$(minorVersion).$(patchVersion)
+  
+  # Version tagging strategy
+  ${{ if eq(variables['Build.SourceBranchName'], 'v2') }}:
+    prereleaseTag: ''  # Release versions (will be marked as "latest")
+  ${{ else }}:
+    prereleaseTag: '-alpha$(Build.BuildId)'  # Pre-release for feature branches
+  packageVersion: $(version)$(prereleaseTag)
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+- stage: Build
+  displayName: 'Build and Test'
+  jobs:
+  - job: BuildAndTest
+    displayName: 'Build and Test Solution'
+    steps:
+    - checkout: self
+      fetchDepth: 0
+
+    - task: UseDotNet@2
+      displayName: 'Use .NET SDK'
+      inputs:
+        packageType: 'sdk'
+        version: $(dotNetVersion)
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Restore NuGet packages'
+      inputs:
+        command: 'restore'
+        projects: '**/*.csproj'
+        feedsToUse: 'select'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Build solution'
+      inputs:
+        command: 'build'
+        projects: 'Sustainsys.Saml2.sln'
+        arguments: '--configuration $(buildConfiguration) --no-restore /p:Version=$(packageVersion) /p:AssemblyVersion=$(version) /p:FileVersion=$(version)'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Run Tests - AspNetCore2.Tests'
+      inputs:
+        command: 'test'
+        projects: 'Tests/AspNetCore2.Tests/AspNetCore2.Tests.csproj'
+        arguments: '--configuration $(buildConfiguration) --no-build --logger trx --collect:"XPlat Code Coverage"'
+        publishTestResults: true
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Run Tests - Tests.NETCore'
+      inputs:
+        command: 'test'
+        projects: 'Tests/Tests.NETCore/Tests.NETCore.csproj'
+        arguments: '--configuration $(buildConfiguration) --no-build --logger trx --collect:"XPlat Code Coverage"'
+        publishTestResults: true
+
+    - task: PublishCodeCoverageResults@1
+      displayName: 'Publish Code Coverage'
+      inputs:
+        codeCoverageTool: 'Cobertura'
+        summaryFileLocation: '$(Agent.TempDirectory)/**/coverage.cobertura.xml'
+
+- stage: Package
+  displayName: 'Create NuGet Packages'
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - job: CreatePackages
+    displayName: 'Create NuGet Packages'
+    steps:
+    - checkout: self
+      fetchDepth: 0
+
+    - task: UseDotNet@2
+      displayName: 'Use .NET SDK'
+      inputs:
+        packageType: 'sdk'
+        version: $(dotNetVersion)
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Restore NuGet packages'
+      inputs:
+        command: 'restore'
+        projects: '**/*.csproj'
+        feedsToUse: 'select'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Pack UiPath.Sustainsys.Saml2'
+      inputs:
+        command: 'pack'
+        packagesToPack: 'Sustainsys.Saml2/Sustainsys.Saml2.csproj'
+        configuration: $(buildConfiguration)
+        outputDir: '$(Build.ArtifactStagingDirectory)/packages'
+        versioningScheme: 'byEnvVar'
+        versionEnvVar: 'packageVersion'
+        buildProperties: 'PackageReleaseNotes="Automated build $(Build.BuildNumber)"'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Pack UiPath.Sustainsys.Saml2.AspNetCore2'
+      inputs:
+        command: 'pack'
+        packagesToPack: 'Sustainsys.Saml2.AspNetCore2/Sustainsys.Saml2.AspNetCore2.csproj'
+        configuration: $(buildConfiguration)
+        outputDir: '$(Build.ArtifactStagingDirectory)/packages'
+        versioningScheme: 'byEnvVar'
+        versionEnvVar: 'packageVersion'
+        buildProperties: 'PackageReleaseNotes="Automated build $(Build.BuildNumber)"'
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish NuGet Packages as Artifacts'
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/packages'
+        artifact: 'nuget-packages'
+        publishLocation: 'pipeline'
+
+- stage: Publish
+  displayName: 'Publish to NuGet Feed'
+  dependsOn: Package
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/v2'))
+  jobs:
+  - deployment: PublishToNuGet
+    displayName: 'Publish to UiPath NuGet Feed'
+    environment: 'nuget-production'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: nuget-packages
+
+          # Log package information before pushing
+          - task: PowerShell@2
+            displayName: 'Log Package Information'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Host "Preparing to publish packages..."
+                $packages = Get-ChildItem "$(Pipeline.Workspace)/nuget-packages/*.nupkg"
+                foreach ($package in $packages) {
+                  Write-Host "Package: $($package.Name)"
+                  # Extract version from filename
+                  if ($package.Name -match "\.(\d+\.\d+\.\d+.*?)\.nupkg$") {
+                    $version = $matches[1]
+                    Write-Host "Version: $version"
+                    
+                    if ($version -notmatch "alpha|beta|rc|preview") {
+                      Write-Host "##vso[task.logissue type=warning]Publishing release version ($version) - this will be marked as 'latest'"
+                    } else {
+                      Write-Host "Publishing pre-release version ($version)"
+                    }
+                  }
+                }
+
+          - task: NuGetCommand@2
+            displayName: 'Push UiPath.Sustainsys.Saml2 to NuGet Feed'
+            inputs:
+              command: 'push'
+              packagesToPush: '$(Pipeline.Workspace)/nuget-packages/UiPath.Sustainsys.Saml2.*.nupkg'
+              nuGetFeedType: 'internal'
+              publishVstsFeed: 'nuget-packages'  # Replace with your actual feed name
+              allowPackageConflicts: false
+              includeNugetOrg: false
+              arguments: '-SkipDuplicate -NoServiceEndpoint'
+
+          - task: NuGetCommand@2
+            displayName: 'Push UiPath.Sustainsys.Saml2.AspNetCore2 to NuGet Feed'
+            inputs:
+              command: 'push'
+              packagesToPush: '$(Pipeline.Workspace)/nuget-packages/UiPath.Sustainsys.Saml2.AspNetCore2.*.nupkg'
+              nuGetFeedType: 'internal'
+              publishVstsFeed: 'nuget-packages'  # Replace with your actual feed name
+              allowPackageConflicts: false
+              includeNugetOrg: false
+              arguments: '-SkipDuplicate -NoServiceEndpoint'
+
+          # Confirm successful publication
+          - task: PowerShell@2
+            displayName: 'Confirm Publication'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Host "✅ Successfully published packages:"
+                $packages = Get-ChildItem "$(Pipeline.Workspace)/nuget-packages/*.nupkg"
+                foreach ($package in $packages) {
+                  Write-Host "   📦 $($package.Name)"
+                }
+                Write-Host ""
+                Write-Host "ℹ️  Services using specific versions (e.g., Version='2.9.1') will not be affected."
+                Write-Host "ℹ️  Services using version ranges (e.g., Version='2.9.*') may pick up the new version."
