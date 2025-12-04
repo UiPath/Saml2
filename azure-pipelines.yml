@@ -90,7 +90,6 @@ stages:
         arguments: '--configuration $(buildConfiguration) --no-build --logger trx'
         publishTestResults: true
 
-    # Package creation (after tests pass)
     - task: DotNetCoreCLI@2
       displayName: 'Pack UiPath.Sustainsys.Saml2'
       inputs:
@@ -122,10 +121,8 @@ stages:
         artifact: 'nuget-packages'
         publishLocation: 'pipeline'
 
-    # Publish to NuGet feed (only on v2 branch)
     - task: PowerShell@2
       displayName: 'Log Package Information'
-      condition: eq(variables['Build.SourceBranch'], 'refs/heads/v2')
       inputs:
         targetType: 'inline'
         script: |
@@ -147,41 +144,12 @@ stages:
           }
 
     - task: NuGetCommand@2
-      displayName: 'Push UiPath.Sustainsys.Saml2 to NuGet Feed'
-      condition: eq(variables['Build.SourceBranch'], 'refs/heads/v2')
+      displayName: 'Push packages to NuGet Feed'
       inputs:
         command: 'push'
         packagesToPush: '$(Build.ArtifactStagingDirectory)/packages/UiPath.Sustainsys.Saml2.*.nupkg'
         nuGetFeedType: 'internal'
-        publishVstsFeed: 'nuget-packages'  # Replace with your actual feed name
+        publishVstsFeed: 'nuget-packages'
         allowPackageConflicts: false
         includeNugetOrg: false
         arguments: '-SkipDuplicate -NoServiceEndpoint'
-
-    - task: NuGetCommand@2
-      displayName: 'Push UiPath.Sustainsys.Saml2.AspNetCore2 to NuGet Feed'
-      condition: eq(variables['Build.SourceBranch'], 'refs/heads/v2')
-      inputs:
-        command: 'push'
-        packagesToPush: '$(Build.ArtifactStagingDirectory)/packages/UiPath.Sustainsys.Saml2.AspNetCore2.*.nupkg'
-        nuGetFeedType: 'internal'
-        publishVstsFeed: 'nuget-packages'  # Replace with your actual feed name
-        allowPackageConflicts: false
-        includeNugetOrg: false
-        arguments: '-SkipDuplicate -NoServiceEndpoint'
-
-    # Confirm successful publication
-    - task: PowerShell@2
-      displayName: 'Confirm Publication'
-      condition: eq(variables['Build.SourceBranch'], 'refs/heads/v2')
-      inputs:
-        targetType: 'inline'
-        script: |
-          Write-Host "Successfully published packages:"
-          $packages = Get-ChildItem "$(Build.ArtifactStagingDirectory)/packages/*.nupkg"
-          foreach ($package in $packages) {
-            Write-Host "   $($package.Name)"
-          }
-          Write-Host ""
-          Write-Host "Services using specific versions (e.g., Version='2.9.1') will not be affected."
-          Write-Host "Services using version ranges (e.g., Version='2.9.*') may pick up the new version."
